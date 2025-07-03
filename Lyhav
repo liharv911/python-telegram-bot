@@ -1,0 +1,176 @@
+import json
+import re
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
+    MessageHandler, filters, ContextTypes, ConversationHandler
+)
+
+# ✅ Config
+ADMIN_ID = 7629017575
+BOT_TOKEN = "8161794307:AAH4orqjAvuh3MCgEcurslXJCI_zlIs0up4"
+
+# ✅ States
+USERNAME, WAITING_RECEIPT = range(2)
+
+# ✅ Data store
+user_data = {}
+confirmed_users = set()
+
+# ✅ Robux prices
+prices = {
+    "40 Robux": "0.60$",
+    "80 Robux": "1.25$",
+    "160 Robux": "2.50$",
+    "320 Robux": "5$",
+    "Premium 1000 Robux": "10.50$"
+}
+
+# ✅ QR info
+qr_image_url = "https://i.imgur.com/8ZBJY6R.jpg"
+qr_caption = (
+    "📲 សូមបង់ប្រាក់តាម QR អេសុីលីដា ខាងលើ\n"
+    "ឈ្មោះ: LY THAMCHANNYUON\n"
+    "📞 071 507 8140\n\n"
+    "បន្ទាប់ពីបង់ប្រាក់ សូមផ្ញើស្នាមបង់មកបន្ត។"
+)
+
+# ✅ Save order to file
+def save_order(order):
+    with open("orders.json", "a", encoding="utf-8") as f:
+        f.write(json.dumps(order, ensure_ascii=False) + "\n")
+
+# ✅ /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("សូមបញ្ចូល Username Roblox របស់អ្នក:")
+    return USERNAME
+
+# ✅ Step 1: Get username
+async def get_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    username = update.message.text.strip()
+    if not re.match(r"^[a-zA-Z0-9_]{3,20}$", username):
+        await update.message.reply_text("❗ Username Roblox មិនត្រឹមត្រូវទេ។ សូមបញ្ចូលឡើងវិញ។")
+        return USERNAME
+
+    user_id = update.message.from_user.id
+    user_data[user_id] = {"username": username}
+
+    keyboard = [[InlineKeyboardButton(f"{k} - {v}", callback_data=k)] for k, v in prices.items()]
+    await update.message.reply_text("📦 ជ្រើសរើសចំនួន Robux:", reply_markup=InlineKeyboardMarkup(keyboard))
+    return WAITING_RECEIPT
+
+# ✅ Step 2: Robux selected
+async def robux_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    robux = query.data
+    price = prices[robux]
+
+    info = user_data.get(user_id, {})
+    info["robux"] = robux
+    info["price"] = price
+
+    await context.bot.send_photo(
+        chat_id=query.message.chat_id,
+        photo=qr_image_url,
+        caption=f"""🧾 **ព័ត៌មានបញ្ជាទិញ**\n👤 `{info['username']}`\n💵 {robux} = {price}\n\n{qr_caption}""",
+        parse_mode="Markdown"
+    )
+
+    await context.bot.send_message(
+        chat_id=query.message.chat_id,
+        text="📸 សូមផ្ញើរូបថតស្នាមបង់ប្រាក់មកទីនេះ។"
+    )
+
+    return WAITING_RECEIPT
+
+# ✅ Step 3: Receive receipt photo
+async def receive_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    info = user_data.get(user_id, {})
+
+    if user_id in confirmed_users:
+        await update.message.reply_text("❗ អ្នកបានផ្ញើររូបរួចហើយ។ សូមរងចាំ Admin បញ្ជាក់។")
+        return ConversationHandler.END
+
+    if update.message.photo:
+        photo_id = update.message.photo[-1].file_id
+        info["receipt_photo_id"] = photo_id
+        confirmed_users.add(user_id)
+
+        save_order({
+            "user_id": user_id,
+            "username": info["username"],
+            "robux": info["robux"],
+            "price": info["price"],
+            "photo_id": photo_id
+        })
+
+        # Notify Admin
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ បញ្ជាក់ទូទាត់", callback_data=f"confirm:{user_id}")
+        ]])
+        await context.bot.send_photo(
+            chat_id=ADMIN_ID,
+            photo=photo_id,
+            caption=f"📥 បញ្ជាទិញថ្មីពី @{update.message.from_user.username or user_id}\n👤 `{info['username']}`\n💵 {info['robux']} = {info['price']}",
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
+
+        await update.message.reply_text("✅ សូមរងចាំ Admin ត្រួតពិនិត្យនិងបញ្ជាក់។")
+        return ConversationHandler.END
+    else:
+        await update.message.reply_text("❗ សូមផ្ញើរូបភាពមក។")
+        return WAITING_RECEIPT
+
+# ✅ Handle confirm from admin
+async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data.split(":")
+    if len(data) != 2:
+        return
+
+    target_user_id = int(data[1])
+    await context.bot.send_message(
+        chat_id=target_user_id,
+        text="🎉 បង់ប្រាក់រួចជាស្ថាពរ! Robux របស់អ្នកនឹងត្រូវបញ្ចូនក្នុងពេលឆាប់ៗ។"
+    )
+    await query.edit_message_caption(
+        caption="✅ បានបញ្ជាក់ទូទាត់ហើយ។"
+    )
+
+# ✅ Cancel command
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    user_data.pop(user_id, None)
+    confirmed_users.discard(user_id)
+    await update.message.reply_text("❌ ការបញ្ជាទិញត្រូវបានបោះបង់។")
+    return ConversationHandler.END
+
+# ✅ Main bot setup
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_username)],
+            WAITING_RECEIPT: [
+                CallbackQueryHandler(robux_selected),
+                MessageHandler(filters.PHOTO, receive_receipt),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_receipt)
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    app.add_handler(conv_handler)
+    app.add_handler(CallbackQueryHandler(confirm_payment, pattern=r"^confirm:\d+$"))
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
